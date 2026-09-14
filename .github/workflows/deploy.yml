@@ -1,0 +1,77 @@
+# Deploys the Neon Dodge PWA to GitHub Pages.
+#
+# The site is pure static HTML/CSS/JS — there is no build step. We stage only
+# the files the browser needs into _site/ and hand that to Pages, so repo
+# extras (.github/, test, ...) never ship.
+#
+# The game already uses relative URLs everywhere (index.html, manifest,
+# sw.js, ES-module imports), so it works at the repo root locally and under
+# the /neon-juice/ project path on Pages with no base-path configuration.
+
+name: Deploy Neon Dodge to GitHub Pages
+
+on:
+  push:
+    branches:
+      - main
+      - arena/01a09fb8-neon-juice
+  workflow_dispatch:
+
+# Required by the Pages actions.
+permissions:
+  contents: read
+  pages: write
+  id-token: write
+
+# One deployment at a time; never cancel a deploy that is already shipping.
+concurrency:
+  group: pages
+  cancel-in-progress: false
+
+jobs:
+  deploy:
+    name: Build & deploy static PWA
+    runs-on: ubuntu-latest
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Stage site files
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p _site
+          cp index.html manifest.webmanifest sw.js _site/
+          cp -r css js assets vendor _site/
+
+      - name: Set up Pages
+        id: pages
+        continue-on-error: true
+        uses: actions/configure-pages@v5
+
+      - name: Pages not enabled yet? Explain the one-time owner step
+        if: steps.pages.outcome == 'failure'
+        run: |
+          {
+            echo "## GitHub Pages is not enabled on this repository yet"
+            echo
+            echo "CI tokens are not allowed to create a Pages site — this is a one-time owner step:"
+            echo
+            echo "1. Open **Settings → Pages** on this repository."
+            echo "2. Under **Build and deployment → Source**, choose **GitHub Actions**."
+            echo "3. Re-run this workflow or push again; deploys are automatic from then on."
+          } | tee -a "$GITHUB_STEP_SUMMARY"
+          echo "::error::GitHub Pages is not enabled yet — Settings → Pages → Source: GitHub Actions (one-time owner step)."
+          exit 1
+
+      - name: Upload Pages artifact
+        uses: actions/upload-pages-artifact@v3
+        with:
+          path: _site
+
+      - name: Deploy to GitHub Pages
+        id: deployment
+        uses: actions/deploy-pages@v4
