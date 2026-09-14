@@ -1,0 +1,157 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no, viewport-fit=cover">
+<title>NEON DODGE — pixel arcade</title>
+<meta name="description" content="A one-finger pixel dodge game with way too much juice: screen shake, hitstop, chromatic aberration, haptics and procedural sound. Installable PWA, works offline.">
+<link rel="manifest" href="manifest.webmanifest">
+<meta name="theme-color" content="#05050e">
+<link rel="icon" href="assets/icon-192.png">
+<link rel="apple-touch-icon" href="assets/icon-192.png">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+<meta name="apple-mobile-web-app-title" content="NEON DODGE">
+<script>
+  /* Opened from a file (not a web server)? The multi-file build can't load its own
+     modules over file://, so hand over to the self-contained single-file build. */
+  (function () {
+    if (location.protocol !== 'file:') return;
+    // this document IS the self-contained build (it is often renamed to index.html
+    // for GitHub Pages) - forwarding would send it to a file that isn't there
+    if (document.querySelector('meta[name="neon-build"][content="standalone"]')) return;
+    if (!/(^|\/)index\.html?$/.test(location.pathname)) return;
+    location.replace('neon-dodge-standalone.html');
+  })();
+</script>
+<link rel="stylesheet" href="css/style.css">
+</head>
+<body>
+<div id="stage">
+  <canvas id="game" width="200" height="432"></canvas>
+  <div class="crt"></div>
+  <div class="vig"></div>
+
+  <!-- ------------------------------------------------------------ HUD -->
+  <div id="hud" class="dim">
+    <div class="hud-top">
+      <div class="score-wrap"><span id="score">0</span></div>
+      <div class="hud-right"><span id="mode-chip">ENDLESS</span> &middot; BEST <span id="best">0</span></div>
+    </div>
+    <div class="hud-combo">
+      <div class="bar"><div id="combo-fill"></div></div>
+      <span id="mult">x1.0</span>
+    </div>
+    <div id="fever" class="hidden">FEVER x2</div>
+  </div>
+
+  <div id="hints" class="hidden">
+    <div class="hint hidden">DRAG ANYWHERE TO DODGE</div>
+    <div class="hint hidden">SKIM HAZARDS FOR GRAZE COMBO</div>
+    <div class="hint hidden">GEMS &amp; POWER-UPS BUILD MULTIPLIER</div>
+  </div>
+
+  <div id="countdown" class="hidden"></div>
+
+  <!-- ----------------------------------------------------------- MENU -->
+  <div id="menu" class="screen">
+    <h1 class="title"><span class="l1">NEON</span><span class="l2">DODGE</span></h1>
+    <p class="tag stagger">drag to move &middot; graze for combo</p>
+    <button id="btn-play" class="btn big stagger">PLAY</button>
+
+    <div class="toggles stagger">
+      <button class="tg" data-toggle="sfx" aria-pressed="true">SOUND <span class="state">ON</span></button>
+      <button class="tg" data-toggle="music" aria-pressed="true">MUSIC <span class="state">ON</span></button>
+      <button class="tg" data-toggle="haptics" aria-pressed="true">HAPTICS <span class="state">ON</span></button>
+      <button class="tg" data-toggle="shake" aria-pressed="true">SHAKE <span class="state">ON</span></button>
+      <button class="tg" data-toggle="reduceFlash" aria-pressed="false">REDUCE FLASH <span class="state">OFF</span></button>
+    </div>
+
+    <div class="juice-row stagger">
+      <span class="jl">MODE</span>
+      <button class="jb" data-mode="endless">ENDLESS</button>
+      <button class="jb" data-mode="daily">DAILY</button>
+    </div>
+
+    <div class="juice-row stagger">
+      <span class="jl">JUICE</span>
+      <button class="jb" data-juice="0.4">SUBTLE</button>
+      <button class="jb" data-juice="1">NORMAL</button>
+      <button class="jb" data-juice="1.6">INSANE</button>
+    </div>
+
+    <p class="best-line stagger">BEST <span id="menu-best">0</span></p>
+    <div class="board compact stagger" id="menu-board"></div>
+    <button id="btn-install" class="btn small hidden stagger">INSTALL APP</button>
+    <p id="install-help" class="help hidden stagger">iOS: Share &rarr; Add to Home Screen</p>
+    <p class="credits stagger">anime.js &middot; ZzFX &middot; canvas-confetti</p>
+  </div>
+
+  <!-- ------------------------------------------------------ GAME OVER -->
+  <div id="over" class="screen hidden">
+    <div class="card">
+      <div id="newbest" class="badge hidden">NEW BEST!</div>
+      <h2>GAME OVER</h2>
+      <div class="final"><span id="final-score">0</span></div>
+      <div class="seed-line" id="seed-line"></div>
+      <div class="stats">
+        <div><b id="st-time">0s</b><span>TIME</span></div>
+        <div><b id="st-graze">0</b><span>GRAZES</span></div>
+        <div><b id="st-gems">0</b><span>GEMS</span></div>
+        <div><b id="st-combo">0</b><span>BEST COMBO</span></div>
+        <div><b id="st-level">1</b><span>LEVEL</span></div>
+      </div>
+      <div class="board" id="board"></div>
+      <div class="row">
+        <button id="btn-retry" class="btn big">RETRY</button>
+        <button id="btn-menu" class="btn">MENU</button>
+      </div>
+      <button id="btn-share" class="btn small">SHARE SCORE</button>
+    </div>
+  </div>
+
+  <div id="pause" class="screen hidden">
+    <div class="card small">
+      <h2>PAUSED</h2>
+      <p class="tag">take a breath</p>
+      <div class="row">
+        <button id="btn-resume" class="btn big">RESUME</button>
+        <button id="btn-quit" class="btn">MENU</button>
+      </div>
+    </div>
+  </div>
+
+  <div id="bootfail" class="screen hidden">
+    <div class="card small">
+      <h2>CAN'T START</h2>
+      <p class="tag" id="bootfail-msg"></p>
+      <p class="tag"><b>Fix:</b> open <b>neon-dodge-standalone.html</b> instead &mdash; one self-contained file, no server.</p>
+      <div class="row"><button id="btn-standalone" class="btn big">OPEN IT</button></div>
+      <p class="tag">Or serve this folder: <code>python3 -m http.server 8080</code></p>
+    </div>
+  </div>
+
+  <div id="toast" class="toast hidden"></div>
+  <div id="boot">LOADING</div>
+</div>
+
+<script src="vendor/anime.min.js"></script>
+<script src="vendor/confetti.browser.min.js"></script>
+<script type="module" src="js/main.js"></script>
+<script>
+  /* If the module never boots (file:// CORS, 404s, ancient browser) say so instead
+     of leaving the player staring at a blinking LOADING. */
+  (function () {
+    var FILE_MSG = "You opened <b>index.html</b> straight from your files. Browsers block ES modules over <code>file://</code>, so the game cannot start.";
+    var GEN_MSG = "The game files did not load. Check the browser console for 404s.";
+    setTimeout(function () {
+      if (document.body.classList.contains('ready')) return;
+      document.getElementById('bootfail-msg').innerHTML =
+        location.protocol === 'file:' ? FILE_MSG : GEN_MSG;
+      document.getElementById('bootfail').classList.remove('hidden');
+    }, 3500);
+  })();
+</script>
+</body>
+</html>
