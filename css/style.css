@@ -359,3 +359,27 @@ body.ready #boot { opacity: 0; transition: opacity .5s; }
 @media (prefers-reduced-motion: reduce) {
   .crt { animation: none; }
 }
+
+/* ---------------------------------------------------------- a11y & touch
+   Comfortable tap targets (>=44px) and visible keyboard focus so the game
+   plays as well on a phone or a laptop keyboard as it does with a mouse. */
+.tg, .jb { min-height: 44px; min-width: 44px; }
+.btn { min-height: 48px; }
+button:focus-visible {
+  outline: 3px solid #38f5ff;
+  outline-offset: 2px;
+  box-shadow: 0 0 14px rgba(56, 245, 255, .5);
+}
+
+/* install-button pulse + play cursor (anti-generic polish) */
+#btn-install.pulse {
+  animation: installPulse 1.4s ease-in-out 3;
+}
+@keyframes installPulse {
+  0%, 100% { transform: scale(1); box-shadow: 0 0 0 0 rgba(77, 255, 158, .5); }
+  50% { transform: scale(1.06); box-shadow: 0 0 22px 4px rgba(77, 255, 158, .45); }
+}
+#game { cursor: crosshair; }
+@media (prefers-reduced-motion: reduce) {
+  #btn-install.pulse { animation: none; }
+}

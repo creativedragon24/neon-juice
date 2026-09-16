@@ -16,6 +16,15 @@ const game = new Game(canvas, { onHud, onGameOver });
 window.__game = game;              // handy for tinkering in devtools
 Music.onBeat((s) => game.beat(s));
 
+/* Device-aware control copy: laptops get the keyboard/mouse line,
+   touch devices keep the one-finger wording. */
+if (window.matchMedia && window.matchMedia('(any-pointer: fine)').matches) {
+  const tag = document.querySelector('#menu .tag');
+  if (tag) tag.innerHTML = 'mouse / WASD / drag &middot; shift = boost &middot; space = play';
+  const h0 = document.querySelector('#hints .hint');
+  if (h0) h0.textContent = 'DRAG, MOUSE OR WASD TO DODGE';
+}
+
 /* ------------------------------------------------------------ assets */
 const FILES = {
   player: 'assets/player.png',
@@ -102,12 +111,15 @@ function onDown(e) {
   }
 }
 function onMove(e) {
-  if (!game.input.active) return;
+  // laptops/desktops: the mouse steers on hover, no click needed;
+  // touch keeps press-and-drag so a resting thumb never moves the ship
+  if (!game.input.active && e.pointerType !== 'mouse') return;
+  if (e.pointerType === 'mouse') game.input.active = true;
   const p = toWorld(e.clientX, e.clientY);
   game.input.x = p.x;
   game.input.y = p.y;
 }
-function onUp() { game.input.active = false; }
+function onUp(e) { if (e.pointerType !== 'mouse') game.input.active = false; }
 
 canvas.addEventListener('pointerdown', onDown);
 window.addEventListener('pointermove', onMove, { passive: true });
@@ -120,6 +132,9 @@ const keys = {};
 window.addEventListener('keydown', (e) => {
   unlockAudio();
   const k = e.key.toLowerCase();
+  // keep arrows/space from scrolling the page while playing
+  if (['arrowleft', 'arrowright', 'arrowup', 'arrowdown', ' '].includes(k)) e.preventDefault();
+  if (k === 'shift') game.input.boost = true;
   keys[k] = true;
   updateKeys();
   if (k === ' ' || k === 'enter') {
@@ -135,7 +150,12 @@ window.addEventListener('keydown', (e) => {
     else if (game.state === 'paused') { hide('#pause'); game.resume(); }
   }
 });
-window.addEventListener('keyup', (e) => { keys[e.key.toLowerCase()] = false; updateKeys(); });
+window.addEventListener('keyup', (e) => {
+  const k = e.key.toLowerCase();
+  if (k === 'shift') game.input.boost = false;
+  keys[k] = false;
+  updateKeys();
+});
 function updateKeys() {
   const l = keys.arrowleft || keys.a ? 1 : 0;
   const r = keys.arrowright || keys.d ? 1 : 0;
@@ -335,7 +355,7 @@ function toggle(name) {
   setSetting(name, !settings[name]);
   syncToggles();
   if (name === 'music') { settings.music ? (game.state === 'play' ? Music.start() : null) : Music.stop(); }
-  SFX.ui();
+  SFX.ui(settings[name]); // two-pitch tick: up = on, down = off
   vibrate(HAPTIC.ui);
 }
 function syncToggles() {
@@ -383,6 +403,13 @@ renderBoards();
 
 /* --------------------------------------------------------------- PWA */
 let deferredPrompt = null;
+const IS_STANDALONE =
+  (window.matchMedia && window.matchMedia('(display-mode: standalone)').matches) ||
+  window.navigator.standalone === true;
+const IS_IOS =
+  /iphone|ipad|ipod/i.test(navigator.userAgent) ||
+  (navigator.platform === 'MacIntel' && navigator.maxTouchPoints > 1);
+
 window.addEventListener('beforeinstallprompt', (e) => {
   e.preventDefault();
   deferredPrompt = e;
@@ -390,6 +417,7 @@ window.addEventListener('beforeinstallprompt', (e) => {
 });
 $('#btn-install').addEventListener('click', async () => {
   SFX.ui();
+  try { localStorage.setItem('neon-dodge-install-nudge', '1'); } catch (e) {}
   if (!deferredPrompt) {
     $('#install-help').classList.remove('hidden');
     return;
@@ -402,7 +430,30 @@ $('#btn-install').addEventListener('click', async () => {
 window.addEventListener('appinstalled', () => {
   $('#btn-install').classList.add('hidden');
   $('#install-help').classList.add('hidden');
+  toast('INSTALLED — SEE YOU ON THE HOME SCREEN');
+  celebrate();
 });
+
+/* iOS has no beforeinstallprompt: show the Share -> Add to Home Screen
+   hint on Apple touch devices instead of a silent dead end. */
+if (IS_IOS && !IS_STANDALONE) $('#install-help').classList.remove('hidden');
+
+/* The install pop: a few seconds after the game is open, put the offer in
+   front of the player once. Native prompt on Chromium, banner + iOS steps
+   elsewhere. Never nags twice (dismissed flag in localStorage). */
+function installNudge() {
+  if (IS_STANDALONE) return;
+  let dismissed = false;
+  try { dismissed = localStorage.getItem('neon-dodge-install-nudge') === '1'; } catch (e) {}
+  if (dismissed) return;
+  const btn = $('#btn-install');
+  btn.classList.remove('hidden');
+  btn.classList.add('pulse');
+  toast(IS_IOS ? 'ADD TO HOME SCREEN FOR FULL-SCREEN PLAY' : 'INSTALL NEON DODGE — PLAYS OFFLINE');
+}
+setTimeout(() => {
+  if (document.body.classList.contains('ready')) installNudge();
+}, 5000);
 
 if ('serviceWorker' in navigator) {
   window.addEventListener('load', () => navigator.serviceWorker.register('sw.js').catch(() => {}));

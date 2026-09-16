@@ -40,7 +40,8 @@ export class Game {
     this.fx = new FX(200, VH);
     this.sprites = {};
     this.W = 200; this.H = VH;
-    this.input = { x: null, y: null, active: false, kx: 0, ky: 0 };
+    this.input = { x: null, y: null, active: false, kx: 0, ky: 0, boost: false };
+    this.kTarget = null; // virtual target for keyboard steering
     this.state = 'menu';
     this.fever = false;
     this.feverT = 0;
@@ -127,6 +128,7 @@ export class Game {
     this.state = 'play';
     this.player.x = this.W / 2;
     this.player.y = this.H * 0.78;
+    this.kTarget = null; // fresh keyboard target each run
     Music.setLevel(0);
     Music.setIntensity(1);
     this._mtier = 1;
@@ -164,7 +166,7 @@ export class Game {
     this.deathT = 0;
     this.player.alive = false;
     Music.stop();
-    SFX.explode();
+    SFX.explode(this.pan());
     vibrate(HAPTIC.death);
     const p = this.player;
     this.fx.slowmo(0.16, 2.0);
@@ -321,6 +323,9 @@ export class Game {
     return 1;
   }
 
+  /* Player x mapped to stereo pan (-1..1) for positional audio. */
+  pan() { return clamp(this.player.x / this.W * 2 - 1, -1, 1) * 0.7; }
+
   /* ---------------------------------------------------------- player */
   updatePlayer(dt) {
     const p = this.player;
@@ -329,13 +334,23 @@ export class Game {
     let tx = p.x, ty = p.y;
 
     if (this.input.kx || this.input.ky) {
-      tx = clamp(p.x + this.input.kx * 260 * dt, 10, this.W - 10);
-      ty = clamp(p.y + this.input.ky * 260 * dt, minY, maxY);
-      this.input.x = tx; this.input.y = ty;
+      // keyboard/trackpad steering: integrate a virtual target at full
+      // speed (340px/s, shift-boost 1.45x, diagonals normalised) and let
+      // the easing chase it - chasing a one-tick-ahead target instead
+      // would cap keyboard velocity far below touch/mouse.
+      const diag = this.input.kx && this.input.ky ? 0.7071 : 1;
+      const spd = 340 * diag * (this.input.boost ? 1.45 : 1);
+      if (!this.kTarget) this.kTarget = { x: p.x, y: p.y };
+      this.kTarget.x = clamp(this.kTarget.x + this.input.kx * spd * dt, 10, this.W - 10);
+      this.kTarget.y = clamp(this.kTarget.y + this.input.ky * spd * dt, minY, maxY);
+      this.input.x = this.kTarget.x;
+      this.input.y = this.kTarget.y;
+    } else if (this.input.active && this.input.x != null) {
+      this.kTarget = { x: clamp(this.input.x, 10, this.W - 10), y: clamp(this.input.y, minY, maxY) };
     }
-    if (this.input.active && this.input.x != null) {
-      tx = clamp(this.input.x, 10, this.W - 10);
-      ty = clamp(this.input.y, minY, maxY);
+    if (this.kTarget) {
+      tx = this.kTarget.x;
+      ty = this.kTarget.y;
     }
     const k = 1 - Math.exp(-17 * dt);
     p.x += (tx - p.x) * k;
@@ -484,7 +499,7 @@ export class Game {
         }
         if (b.t >= b.charge) {
           b.phase = 'fire'; b.t = 0;
-          SFX.beam();
+          SFX.beam(this.pan());
           vibrate([22, 18, 22]);
           this.fx.shake(0.45);
           this.fx.flash('#ff3355', 0.32);
@@ -630,7 +645,7 @@ export class Game {
     this.bestCombo = Math.max(this.bestCombo, this.combo);
     const bonus = Math.round(6 * this.mult());
     this.score += bonus;
-    SFX.graze(this.combo);
+    SFX.graze(this.combo, this.pan());
     vibrate(HAPTIC.graze);
     this.fx.freeze(0.022);
     this.fx.shake(0.075);
@@ -654,7 +669,7 @@ export class Game {
     this.bestCombo = Math.max(this.bestCombo, this.combo);
     const gain = Math.round(25 * this.mult());
     this.score += gain;
-    SFX.gem(this.combo);
+    SFX.gem(this.combo, this.pan());
     vibrate(HAPTIC.gem);
     this.fx.shake(0.16);
     this.fx.punch(0.022);
@@ -686,7 +701,7 @@ export class Game {
     const p = this.player;
     p.invuln = 1.2;
     this.score += 60;
-    SFX.shieldBreak();
+    SFX.shieldBreak(this.pan());
     vibrate([45, 25, 45]);
     this.fx.freeze(0.1);
     this.fx.impact = settings.reduceFlash ? 0 : 0.04;
@@ -707,7 +722,7 @@ export class Game {
     this.lives--;
     this.combo = 0;
     p.invuln = 1.8;
-    SFX.hit();
+    SFX.hit(this.pan());
     vibrate(HAPTIC.hit);
     this.fx.freeze(0.13);
     this.fx.impact = settings.reduceFlash ? 0 : 0.05;   // 3-frame solid white impact
