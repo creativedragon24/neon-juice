@@ -1,6 +1,6 @@
 /* Neon Dodge service worker — precache everything, serve cache-first.
    Bump CACHE when you ship new assets. */
-const CACHE = 'neon-dodge-v6';
+const CACHE = 'neon-dodge-v8'; // v8: install-prompt pop, cursor/pressed polish
 
 const ASSETS = [
   './',
