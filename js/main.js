@@ -12,7 +12,7 @@ const confetti = window.confetti;
 const $ = (s) => document.querySelector(s);
 
 const canvas = $('#game');
-const game = new Game(canvas, { onHud, onGameOver });
+const game = new Game(canvas, { onHud, onGameOver, onCoach });
 window.__game = game;              // handy for tinkering in devtools
 Music.onBeat((s) => game.beat(s));
 
@@ -74,6 +74,12 @@ Promise.all(
   .then((pairs) => {
     const sprites = Object.fromEntries(pairs);
     for (const k of Object.keys(POWER)) sprites['pw_' + k] = tint(sprites.powerup, POWER[k].color);
+    // The Director's extra enemy roster: tinted variants of the base sprites so
+    // new foes read as distinct without shipping more art.
+    sprites.hunter = tint(sprites.drone, '#b45cff');
+    sprites.weaver = tint(sprites.drone, '#38f5ff');
+    sprites.splitter = tint(sprites.meteor, '#4dff9e');
+    sprites.shard = tint(sprites.meteor, '#7dffb0');
     game.setSprites(sprites);
     booted = true;
     document.body.classList.add('ready');
@@ -140,8 +146,9 @@ window.addEventListener('keydown', (e) => {
   if (k === ' ' || k === 'enter') {
     e.preventDefault();
     if (game.state === 'menu') startRun();
-    else if (game.state === 'over') startRun();
+    else if (game.state === 'over') startRun(true);
   }
+  if (k === 'r' && game.state === 'over') { e.preventDefault(); SFX.ui(); startRun(true); }
   if (k === 'm') toggle('sfx');
   if (k === 'f') { game.showFps = !game.showFps; SFX.ui(); }
   if (k === 'escape' || k === 'p') {
@@ -192,6 +199,72 @@ function onHud(s) {
   }
 }
 
+/* --------------------------------------------------- Director coach line */
+let coachT;
+function onCoach(msg, tone = 'info') {
+  const el = $('#coach');
+  if (!el) return;
+  el.textContent = msg;
+  el.className = 'coach ' + tone;         // base + tone modifier
+  el.classList.remove('hidden');
+  if (anime) { anime.remove(el); anime({ targets: el, translateY: [-12, 0], opacity: [0, 1], scale: [0.92, 1], duration: 320, easing: 'easeOutBack' }); }
+  clearTimeout(coachT);
+  coachT = setTimeout(() => el.classList.add('hidden'), 2700);
+}
+
+/* ------------------------------------------------ retention: streaks */
+const todayStr = () => new Date().toISOString().slice(0, 10);
+function bumpStreak() {
+  const today = todayStr();
+  if (settings.lastPlayed === today) { if (!settings.streak) settings.streak = 1; return; }
+  const yesterday = new Date(Date.now() - 86400000).toISOString().slice(0, 10);
+  settings.streak = settings.lastPlayed === yesterday ? (settings.streak || 0) + 1 : 1;
+  settings.lastPlayed = today;
+  saveSettings();
+}
+function renderStreak() {
+  const chip = $('#streak-chip');
+  if (!chip) return;
+  const n = settings.streak || 0;
+  if (n >= 2) { chip.textContent = `\uD83D\uDD25 ${n}-DAY STREAK`; chip.classList.remove('hidden'); }
+  else chip.classList.add('hidden');
+}
+
+/* --------------------------------------------- retention: achievements */
+const ACHIEVEMENTS = [
+  { id: 'first',    name: 'FIRST FLIGHT',   test: () => true },
+  { id: 'combo25',  name: 'COMBO x25',      test: (st) => st.bestCombo >= 25 },
+  { id: 'survive60',name: 'MINUTE MASTER',  test: (st) => st.time >= 60 },
+  { id: 'level5',   name: 'DEEP DIVER',     test: (st) => st.level >= 5 },
+  { id: 'gems25',   name: 'GEM HOARDER',    test: (st) => st.gems >= 25 },
+  { id: 'graze50',  name: 'DAREDEVIL',      test: (st) => st.grazes >= 50 },
+  { id: 'runs10',   name: 'REGULAR',        test: () => (settings.runs || 0) >= 10 },
+  { id: 'streak3',  name: '3-DAY STREAK',   test: () => (settings.streak || 0) >= 3 },
+];
+function checkAchievements(st) {
+  if (!Array.isArray(settings.achievements)) settings.achievements = [];
+  const earned = [];
+  for (const a of ACHIEVEMENTS) {
+    if (settings.achievements.includes(a.id)) continue;
+    if (a.test(st)) { settings.achievements.push(a.id); earned.push(a); }
+  }
+  if (earned.length) {
+    saveSettings();
+    earned.forEach((a, i) => setTimeout(() => { toast(`\uD83C\uDFC6 UNLOCKED — ${a.name}`); SFX.levelUp && SFX.levelUp(); }, 900 + i * 1500));
+    setTimeout(() => celebrate(), 900);
+  }
+}
+
+/* A personalised "one more run" goal to pull the player back in. */
+function nextGoal(st) {
+  const best = st.best || 0;
+  if (best && st.score < best) return `${best - st.score} PTS TO BEAT YOUR BEST`;
+  if (st.level < 5) return `REACH LEVEL 5 (YOU HIT ${st.level})`;
+  if (st.bestCombo < 25) return `LAND A x25 COMBO (BEST ${st.bestCombo})`;
+  if (st.time < 90) return `SURVIVE 90S (YOU LASTED ${st.time.toFixed(0)}S)`;
+  return 'CAN YOU SET A NEW RECORD?';
+}
+
 /* ------------------------------------------------------------- screens */
 function show(sel) { $(sel).classList.remove('hidden'); }
 function hide(sel) { $(sel).classList.add('hidden'); }
@@ -227,12 +300,14 @@ function showHints() {
   next();
 }
 
-function startRun() {
+function startRun(fast = false) {
   unlockAudio();
+  bumpStreak();
   hide('#menu'); hide('#over'); hide('#pause');
   $('#hints').classList.add('hidden');
   $('#hud').classList.remove('dim');
-  let n = 3;
+  // "Play again" gets a snappy restart (no long 3-2-1) so the retry loop is tight.
+  let n = fast ? 0 : 3;
   const el = $('#countdown');
   el.classList.remove('hidden');
   const step = () => {
@@ -314,6 +389,21 @@ function onGameOver(st) {
     : `ENDLESS \u00b7 SEED ${st.seed}`;
   pushScore(lastEntry);
 
+  // Director read-out: shows the agent's learned take on the player
+  const dl = $('#dir-line');
+  if (dl && st.director) {
+    dl.textContent = `DIRECTOR: ${st.director.tier} \u00b7 SKILL ${Math.round(st.director.skill * 100)}% \u00b7 RUN #${st.director.runs}`;
+  }
+  // "one more run" goal
+  const gl = $('#goal-line');
+  if (gl) {
+    if (st.mode === 'endless') { gl.textContent = `NEXT: ${nextGoal(st)}`; gl.classList.remove('hidden'); }
+    else gl.classList.add('hidden');
+  }
+
+  renderStreak();
+  checkAchievements(st);
+
   if (st.isBest) {
     $('#newbest').classList.remove('hidden');
     if (anime) anime({ targets: '#newbest', scale: [0, 1], rotate: [-8, 0], duration: 800, delay: 250, easing: 'easeOutElastic(1, .5)' });
@@ -333,7 +423,7 @@ function celebrate() {
 
 /* ------------------------------------------------------------ buttons */
 $('#btn-play').addEventListener('click', () => { SFX.ui(); vibrate(HAPTIC.ui); startRun(); });
-$('#btn-retry').addEventListener('click', () => { SFX.ui(); vibrate(HAPTIC.ui); startRun(); });
+$('#btn-retry').addEventListener('click', () => { SFX.ui(); vibrate(HAPTIC.ui); startRun(true); });
 $('#btn-menu').addEventListener('click', () => {
   SFX.ui(); vibrate(HAPTIC.ui);
   hide('#over'); show('#menu');
@@ -400,6 +490,7 @@ $('#btn-share').addEventListener('click', async () => {
 });
 
 renderBoards();
+renderStreak();
 
 /* --------------------------------------------------------------- PWA */
 let deferredPrompt = null;
