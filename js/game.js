@@ -8,6 +8,7 @@ import { SFX, Music } from './audio.js';
 import { settings } from './settings.js';
 import { drawText } from './pixelfont.js';
 import { seedRng, srnd, srange, spick, dailySeed } from './rng.js';
+import { Director } from './director.js';
 
 export const VH = 432;              // internal height in pixels
 const clamp = (v, a, b) => (v < a ? a : v > b ? b : v);
@@ -23,6 +24,17 @@ export const POWER = {
   slow: { color: '#b45cff', label: 'SLOW-MO', dur: 5.5 },
 };
 const MAGNET_R = 92;
+
+/* Enemy roster. New types are unlocked over a run by the Director so the
+   game keeps introducing fresh threats instead of the same two forever. */
+export const ENEMY = {
+  meteor:   { sprite: 'meteor',   color: '#ff8a3d', r: 8,   size: 24 },
+  drone:    { sprite: 'drone',    color: '#ff2e88', r: 7.5, size: 21 },
+  hunter:   { sprite: 'hunter',   color: '#b45cff', r: 8,   size: 22 },
+  splitter: { sprite: 'splitter', color: '#4dff9e', r: 9,   size: 27 },
+  shard:    { sprite: 'shard',    color: '#7dffb0', r: 5.5, size: 15 },
+  weaver:   { sprite: 'weaver',   color: '#38f5ff', r: 7,   size: 20 },
+};
 const STEP = 1 / 60;        // fixed simulation step (docs/02: consistency across hardware)
 const MAX_STEPS = 5;        // never simulate more than this per frame (no spiral of death)
 const MAX_FRAME = 0.25;
@@ -50,6 +62,11 @@ export class Game {
     this.quality = 0;      // 0 full · 1 reduced · 2 low-end (adaptive governor)
     this.hue = 305; this.hueTarget = 305;
     this.vignette = null;
+    // The in-game agent: watches the player and reshapes the run live.
+    this.director = new Director({
+      coach: (msg, tone) => { if (this.hooks.onCoach) this.hooks.onCoach(msg, tone); },
+      toast: (msg) => { if (this.hooks.onToast) this.hooks.onToast(msg); },
+    });
     this.resetRun();
     this.resize();
   }
@@ -125,6 +142,7 @@ export class Game {
     this.mode = settings.mode === 'daily' ? 'daily' : 'endless';
     this.seed = this.mode === 'daily' ? dailySeed() : (Math.random() * 4294967296) >>> 0;
     seedRng(this.seed);
+    this.director.onRunStart(this.mode);
     this.state = 'play';
     this.player.x = this.W / 2;
     this.player.y = this.H * 0.78;
@@ -198,6 +216,11 @@ export class Game {
     const isBest = this.score > (settings.bests[key] || 0);
     if (isBest) settings.bests[key] = Math.floor(this.score);
     settings.runs = (settings.runs || 0) + 1;
+    // let the agent learn from this run so the next one starts tuned to you
+    this.director.onRunEnd({
+      time: this.time, grazes: this.grazes, gems: this.gems,
+      bestCombo: this.bestCombo, score: this.score,
+    });
     if (this.hooks.onGameOver) {
       this.hooks.onGameOver({
         score: Math.floor(this.score),
@@ -210,6 +233,7 @@ export class Game {
         bestCombo: this.bestCombo,
         time: this.time,
         level: this.level,
+        director: this.director.summary(),
       });
     }
   }
@@ -266,12 +290,11 @@ export class Game {
     this.fx.quality = q;
   }
 
-  /* Adaptive difficulty (docs/04) - endless only; daily runs stay strictly seeded. */
+  /* Adaptive difficulty (docs/04) - now driven by the Director agent for
+     endless runs; daily runs stay strictly seeded (pressure fixed at 1). */
   updatePressure(dt) {
-    if (this.mode === 'daily' || this.time < 10) return;
-    const recent = this.hitTimes.filter((t) => t > this.time - 18).length;
-    const target = recent === 0 ? 1.08 : recent === 1 ? 1.0 : 0.85;
-    this.pressure += (target - this.pressure) * Math.min(1, dt * 0.35);
+    if (this.mode === 'daily') { this.pressure = 1; return; }
+    this.director.update(dt, this);
   }
 
   update(dt) {
@@ -396,6 +419,17 @@ export class Game {
     for (let i = this.pending.length - 1; i >= 0; i--) {
       if (this.pending[i].t <= this.time) { this.pending[i].fn(); this.pending.splice(i, 1); }
     }
+    // Director interventions (endless only) — a rescue shield when you're on
+    // the ropes, a gem shower when you're dominating.
+    if (this.director.rescueReady) {
+      this.director.rescueReady = false;
+      this.spawnPower('shield');
+      this.powerTimer = Math.max(this.powerTimer, 9);
+    }
+    if (this.director.wantGemShower) {
+      this.director.wantGemShower = false;
+      this.spawnGemArc(true);
+    }
     this.spawnTimer -= dt;
     if (this.spawnTimer <= 0) {
       this.spawnTimer = ((1.05 - 0.55 * d) * srange(0.82, 1.22)) / this.pressure;
@@ -428,28 +462,76 @@ export class Game {
     for (let i = 0; i < n; i++) this.spawnHazard(srange(16, this.W - 16), d);
   }
 
+  /* Daily mode must stay identical for everyone, so it picks enemy types with
+     the seeded RNG. Endless hands the choice to the Director (variety-aware). */
+  chooseTypeSeeded(d) {
+    const types = this.director.unlockedTypes(this);
+    const base = { meteor: 1.0, drone: 0.6 + d * 0.3, hunter: 0.4 + d * 0.3, splitter: 0.3 + d * 0.3, weaver: 0.35 + d * 0.3 };
+    let total = 0; const w = [];
+    for (const t of types) { const x = base[t] ?? 0.4; w.push(x); total += x; }
+    let r = srnd() * total, chosen = types[0];
+    for (let i = 0; i < types.length; i++) { r -= w[i]; if (r <= 0) { chosen = types[i]; break; } }
+    return chosen;
+  }
+
   spawnHazard(x, d, opts = {}) {
-    const isDrone = srnd() < 0.32 + d * 0.12;
+    let type = opts.type;
+    if (!type) type = this.mode === 'daily' ? this.chooseTypeSeeded(d) : this.director.chooseType(this);
+    const cfg = ENEMY[type] || ENEMY.meteor;
     const speed = (86 + d * 120) * srange(0.85, 1.2) * (opts.speedMul || 1) * (0.92 + 0.08 * this.pressure);
     const h = {
-      type: isDrone ? 'drone' : 'meteor',
-      x, y: -22 - srange(0, 40),
-      vy: speed,
-      vx: isDrone ? 0 : srange(-26, 26),
+      type,
+      x, y: opts.y != null ? opts.y : -22 - srange(0, 40),
+      vy: opts.vy != null ? opts.vy : speed,
+      vx: opts.vx != null ? opts.vx : 0,
       baseX: x,
-      r: isDrone ? 7.5 : 8,
+      r: cfg.r,
       rot: srange(0, Math.PI * 2),
       rotSpeed: srange(-3.2, 3.2),
       wob: srange(0, 6.28),
       wobFreq: srange(1.2, 2.6),
-      wobAmp: isDrone ? srange(14, 42) : 0,
-      size: isDrone ? 21 : 24,
+      wobAmp: 0,
+      size: cfg.size,
+      color: cfg.color,
       grazed: false,
       dead: false,
     };
+    // per-type personality
+    if (type === 'drone') {
+      h.wobAmp = srange(14, 42);
+    } else if (type === 'hunter') {
+      h.homing = true; h.homeAccel = 24 + d * 34; h.vy *= 0.9;
+    } else if (type === 'weaver') {
+      h.wobAmp = srange(34, 56); h.wobFreq = srange(2.2, 3.4); h.vy *= 0.96;
+    } else if (type === 'splitter') {
+      h.split = false; h.splitAt = srange(this.H * 0.28, this.H * 0.5); h.vy *= 0.9;
+    } else { // meteor / shard drift sideways a little
+      h.vx = opts.vx != null ? opts.vx : srange(-26, 26);
+    }
     this.hazards.push(h);
-    if (this.spawnLog.length < 300) this.spawnLog.push(`${h.type}:${Math.round(x)}:${Math.round(speed)}`);
+    if (this.spawnLog.length < 300) this.spawnLog.push(`${h.type}:${Math.round(x)}:${Math.round(h.vy)}`);
     return h;
+  }
+
+  /* The Director fires these as short "surge" events to keep runs varied. */
+  runSurge(recipe, pool) {
+    const d = this.difficulty();
+    const pick = () => (pool && pool.length ? pool[(Math.random() * pool.length) | 0] : 'meteor');
+    if (recipe === 'wall') { this.spawnWall(d); return; }
+    if (recipe === 'stream') { this.spawnStream(d); return; }
+    if (recipe === 'pincer') {
+      for (let k = 0; k < 3; k++) this.schedule(k * 0.2, () => {
+        this.spawnHazard(srange(14, 42), d, { type: pick(), speedMul: 1.0 });
+        this.spawnHazard(srange(this.W - 42, this.W - 14), d, { type: pick(), speedMul: 1.0 });
+      });
+      this.fx.popup({ x: this.W / 2, y: this.H * 0.3, text: 'PINCER', color: '#b45cff', scale: 2, life: 1.0 });
+      return;
+    }
+    if (recipe === 'swarm') {
+      const n = 4 + ((Math.random() * 3) | 0);
+      for (let k = 0; k < n; k++) this.schedule(k * 0.12, () => this.spawnHazard(srange(16, this.W - 16), d, { type: pick() }));
+      this.fx.popup({ x: this.W / 2, y: this.H * 0.3, text: 'SWARM', color: '#ff2e88', scale: 2, life: 1.0 });
+    }
   }
 
   spawnWall(d) {
@@ -558,20 +640,20 @@ export class Game {
     }
   }
 
-  spawnPower() {
-    const kind = spick(Object.keys(POWER));
+  spawnPower(forceKind) {
+    const kind = forceKind || spick(Object.keys(POWER));
     const x = srange(24, this.W - 24);
     this.pickups.push({ x, y: -18, vy: 52 + this.level * 2, ph: rnd(0, 6.28), kind, r: 9 });
     this.fx.ring({ x, y: -10, r0: 2, r1: 22, life: 0.55, color: POWER[kind].color, width: 1 });
   }
 
-  spawnGemArc() {
+  spawnGemArc(shower = false) {
     const x0 = srange(26, this.W - 26);
-    const n = 2 + ((srnd() * 3) | 0);
+    const n = shower ? 6 + ((Math.random() * 3) | 0) : 2 + ((srnd() * 3) | 0);
     for (let i = 0; i < n; i++) {
-      this.schedule(i * 0.18, () => {
+      this.schedule(i * (shower ? 0.1 : 0.18), () => {
         this.pickups.push({
-          x: clamp(x0 + Math.sin(i * 0.9) * 22, 12, this.W - 12),
+          x: clamp(x0 + Math.sin(i * 0.9) * (shower ? 30 : 22), 12, this.W - 12),
           y: -16, vy: 60 + this.level * 2, ph: rnd(0, 6.28), taken: false, kind: 'gem',
         });
       });
@@ -585,12 +667,31 @@ export class Game {
     const warp = p.slowT > 0 ? SLOW_WARP : 1;
     for (let i = this.hazards.length - 1; i >= 0; i--) {
       const h = this.hazards[i];
+
+      // HUNTER: steers toward the player until it passes below them
+      if (h.homing && h.y < p.y && this.state !== 'menu') {
+        const dir = Math.sign(p.x - h.x) || 0;
+        h.vx = clamp(h.vx + dir * h.homeAccel * warp * dt, -78, 78);
+      }
+
       h.y += h.vy * warp * dt;
       h.x += h.vx * warp * dt;
       h.rot += h.rotSpeed * dt;
       h.wob += dt;
-      if (h.type === 'drone') h.x = h.baseX + Math.sin(h.wob * h.wobFreq) * h.wobAmp;
-      if (h.x < 8 || h.x > this.W - 8) h.vx *= -1;
+      // DRONE / WEAVER weave around an anchor x
+      if (h.type === 'drone' || h.type === 'weaver') h.x = clamp(h.baseX + Math.sin(h.wob * h.wobFreq) * h.wobAmp, 8, this.W - 8);
+      if (h.x < 8 || h.x > this.W - 8) { h.vx *= -1; h.baseX = clamp(h.baseX, 10, this.W - 10); }
+
+      // SPLITTER: bursts into two shards partway down the screen
+      if (h.type === 'splitter' && !h.split && h.y >= h.splitAt && this.state === 'play') {
+        h.split = true; h.dead = true;
+        for (const s of [-1, 1]) {
+          this.spawnHazard(h.x, this.difficulty(), { type: 'shard', y: h.y, vy: h.vy * 1.08, vx: s * srange(34, 62) });
+        }
+        this.fx.burst({ x: h.x, y: h.y, count: 14, colors: ['#4dff9e', '#7dffb0', '#ffffff'], speed: [60, 220], size: [1, 3], life: [0.2, 0.6], gravity: 60 });
+        this.fx.ring({ x: h.x, y: h.y, r0: 4, r1: 30, life: 0.3, color: '#4dff9e', width: 1 });
+      }
+
       if (h.y > this.H + 34 || h.dead) { this.hazards.splice(i, 1); continue; }
 
       if (this.state === 'play' && !frozenPlayer) {
@@ -641,6 +742,7 @@ export class Game {
   onGraze(h) {
     this.grazes++;
     this.combo++;
+    this.director.onGraze();
     this.comboTimer = 2.6;
     this.bestCombo = Math.max(this.bestCombo, this.combo);
     const bonus = Math.round(6 * this.mult());
@@ -665,6 +767,7 @@ export class Game {
   onGem(g) {
     this.gems++;
     this.combo++;
+    this.director.onGem();
     this.comboTimer = 2.6;
     this.bestCombo = Math.max(this.bestCombo, this.combo);
     const gain = Math.round(25 * this.mult());
@@ -721,6 +824,7 @@ export class Game {
     this.hitTimes.push(this.time);
     this.lives--;
     this.combo = 0;
+    this.director.onHit(this.lives);
     p.invuln = 1.8;
     SFX.hit(this.pan());
     vibrate(HAPTIC.hit);
@@ -920,15 +1024,26 @@ export class Game {
 
     // ---- hazards
     for (const h of this.hazards) {
-      const spr = h.type === 'drone' ? this.sprites.drone : this.sprites.meteor;
-      const wob = h.type === 'drone' ? Math.sin(h.wob * 6) * 0.15 : 0;
-      this.glowSprite(s, spr, h.x, h.y, h.size, h.rot + wob, h.type === 'drone' ? '#ff2e88' : '#ff8a3d', 0.3);
-      if (h.type === 'drone') {
+      const cfg = ENEMY[h.type] || ENEMY.meteor;
+      const spr = this.sprites[cfg.sprite] || this.sprites.meteor;
+      const wob = (h.type === 'drone' || h.type === 'weaver') ? Math.sin(h.wob * 6) * 0.15 : 0;
+      this.glowSprite(s, spr, h.x, h.y, h.size, h.rot + wob, cfg.color, h.type === 'hunter' ? 0.42 : 0.3);
+      // orbit ring on drones / hunters signals a tracking threat
+      if (h.type === 'drone' || h.type === 'hunter') {
         s.save();
         s.globalCompositeOperation = 'lighter';
         s.globalAlpha = 0.25 + Math.sin(h.wob * 8) * 0.15;
-        s.strokeStyle = '#ff2e88'; s.lineWidth = 1;
+        s.strokeStyle = cfg.color; s.lineWidth = 1;
         s.beginPath(); s.arc(h.x, h.y, h.r + 5, 0, Math.PI * 2); s.stroke();
+        s.restore();
+      }
+      // hunter draws a faint lock-on line to the player while chasing
+      if (h.type === 'hunter' && this.player.alive && h.y < this.player.y) {
+        s.save();
+        s.globalCompositeOperation = 'lighter';
+        s.globalAlpha = 0.12 + Math.sin(this.time * 10) * 0.06;
+        s.strokeStyle = cfg.color; s.lineWidth = 1;
+        s.beginPath(); s.moveTo(h.x, h.y); s.lineTo(this.player.x, this.player.y); s.stroke();
         s.restore();
       }
     }

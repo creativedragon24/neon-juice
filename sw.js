@@ -1,6 +1,6 @@
 /* Neon Dodge service worker — precache everything, serve cache-first.
    Bump CACHE when you ship new assets. */
-const CACHE = 'neon-dodge-v8'; // v8: install-prompt pop, cursor/pressed polish
+const CACHE = 'neon-dodge-v9'; // v9: Director agent, new enemies, play-again + retention
 
 const ASSETS = [
   './',
@@ -9,6 +9,7 @@ const ASSETS = [
   './css/style.css',
   './js/main.js',
   './js/game.js',
+  './js/director.js',
   './js/juice.js',
   './js/audio.js',
   './js/settings.js',
