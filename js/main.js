@@ -12,13 +12,24 @@ const confetti = window.confetti;
 const $ = (s) => document.querySelector(s);
 
 const canvas = $('#game');
-const game = new Game(canvas, { onHud, onGameOver, onCoach });
+const game = new Game(canvas, { onHud, onGameOver, onCoach, onIntroEnd });
 window.__game = game;              // handy for tinkering in devtools
 Music.onBeat((s) => game.beat(s));
 
-/* Device-aware control copy: laptops get the keyboard/mouse line,
-   touch devices keep the one-finger wording. */
-if (window.matchMedia && window.matchMedia('(any-pointer: fine)').matches) {
+/* ---------------------------------------------------- device-aware copy
+   Laptops get the keyboard/mouse line, touch devices keep the one-finger
+   wording. The same read drives the move prompt shown during the hook. */
+const HAS_FINE_POINTER = !!(window.matchMedia && window.matchMedia('(any-pointer: fine)').matches);
+const HAS_TOUCH = !!(window.matchMedia && window.matchMedia('(any-pointer: coarse)').matches) ||
+  navigator.maxTouchPoints > 0;
+
+const MOVE_PROMPT = HAS_FINE_POINTER && HAS_TOUCH
+  ? { main: 'MOVE TO FLY', sub: 'MOUSE &middot; DRAG &middot; WASD' }
+  : HAS_FINE_POINTER
+    ? { main: 'MOVE YOUR MOUSE TO FLY', sub: 'OR WASD / ARROWS &middot; SHIFT TO BOOST' }
+    : { main: 'DRAG ANYWHERE TO FLY', sub: 'ONE FINGER, ANYWHERE ON SCREEN' };
+
+if (HAS_FINE_POINTER) {
   const tag = document.querySelector('#menu .tag');
   if (tag) tag.innerHTML = 'mouse / WASD / drag &middot; shift = boost &middot; space = play';
   const h0 = document.querySelector('#hints .hint');
@@ -83,18 +94,7 @@ Promise.all(
     game.setSprites(sprites);
     booted = true;
     document.body.classList.add('ready');
-    if (anime) {
-      anime({
-        targets: '#menu .stagger',
-        translateY: [26, 0],
-        opacity: [0, 1],
-        scale: [0.86, 1],
-        duration: 780,
-        delay: anime.stagger(70, { start: 120 }),
-        easing: 'easeOutElastic(1, .7)',
-      });
-      anime({ targets: '#menu .title span', rotate: [-6, 0], opacity: [0, 1], duration: 700, delay: anime.stagger(160), easing: 'easeOutBack' });
-    }
+    autoStart();          // no menu, no 3-2-1 — straight into the hook
   })
   .catch((e) => { console.error('asset load failed', e); $('#boot').textContent = 'asset error'; });
 
@@ -108,6 +108,7 @@ function toWorld(clientX, clientY) {
 }
 function onDown(e) {
   unlockAudio();
+  dismissMovePrompt();
   const p = toWorld(e.clientX, e.clientY);
   game.input.active = true;
   game.input.x = p.x;
@@ -121,9 +122,11 @@ function onMove(e) {
   // touch keeps press-and-drag so a resting thumb never moves the ship
   if (!game.input.active && e.pointerType !== 'mouse') return;
   if (e.pointerType === 'mouse') game.input.active = true;
+  unlockAudio();          // a hover is enough: the hook is already playing
   const p = toWorld(e.clientX, e.clientY);
   game.input.x = p.x;
   game.input.y = p.y;
+  dismissMovePrompt();
 }
 function onUp(e) { if (e.pointerType !== 'mouse') game.input.active = false; }
 
@@ -143,6 +146,7 @@ window.addEventListener('keydown', (e) => {
   if (k === 'shift') game.input.boost = true;
   keys[k] = true;
   updateKeys();
+  if (game.input.kx || game.input.ky) dismissMovePrompt();
   if (k === ' ' || k === 'enter') {
     e.preventDefault();
     if (game.state === 'menu') startRun();
@@ -275,13 +279,86 @@ function popIn(sel) {
   anime({ targets: sel, opacity: [0, 1], scale: [0.8, 1], duration: 620, easing: 'easeOutElastic(1, .6)' });
 }
 
-function showHints() {
+/* --------------------------------------------------------- the hook
+   The game auto-starts: assets land, the scripted ~6.5s intro fires and
+   the player is already flying. The menu is still there behind it (game
+   over -> MENU, or pause -> MENU) — it just is not the front door. */
+function openMenu() {
+  show('#menu');
+  if (!anime) return;
+  anime({
+    targets: '#menu .stagger',
+    translateY: [26, 0],
+    opacity: [0, 1],
+    scale: [0.86, 1],
+    duration: 780,
+    delay: anime.stagger(70, { start: 120 }),
+    easing: 'easeOutElastic(1, .7)',
+  });
+  anime({ targets: '#menu .title span', rotate: [-6, 0], opacity: [0, 1], duration: 700, delay: anime.stagger(160), easing: 'easeOutBack' });
+}
+
+function showMovePrompt() {
+  const el = $('#move-prompt');
+  if (!el) return;
+  el.innerHTML = `<b>${MOVE_PROMPT.main}</b><i>${MOVE_PROMPT.sub}</i>`;
+  el.classList.remove('hidden');
+  if (anime) {
+    anime.remove(el);
+    anime({ targets: el, opacity: [0, 1], translateY: [14, 0], scale: [0.86, 1], duration: 620, delay: 380, easing: 'easeOutElastic(1, .7)' });
+  }
+}
+function dismissMovePrompt() {
+  const el = $('#move-prompt');
+  if (!el || el.classList.contains('hidden') || el.dataset.going === '1') return;
+  el.dataset.going = '1';
+  const finish = () => { el.classList.add('hidden'); el.dataset.going = ''; };
+  if (anime) { anime.remove(el); anime({ targets: el, opacity: 0, scale: 0.9, duration: 260, easing: 'easeOutQuad', complete: finish }); }
+  else finish();
+}
+
+function autoStart() {
+  bumpStreak();
+  hide('#menu'); hide('#over'); hide('#pause');
+  $('#hints').classList.add('hidden');
+  $('#countdown').classList.add('hidden');
+  // the hook is a cinematic — the HUD stays dark until the run really starts
+  $('#hud').classList.add('dim');
+  game.startRun({ intro: true });
+  showMovePrompt();
+  // a small confetti pop on top of the canvas entrance FX
+  if (confetti) {
+    setTimeout(() => confetti({
+      particleCount: 60, spread: 95, startVelocity: 46, ticks: 150, scalar: 0.9,
+      origin: { x: 0.5, y: 0.78 }, colors: ['#38f5ff', '#ff2e88', '#ffd23f', '#4dff9e', '#ffffff'],
+    }), 40);
+  }
+}
+
+/* Fired by the game the instant the script lets go. */
+function onIntroEnd() {
+  dismissMovePrompt();
+  $('#hud').classList.remove('dim');
+  const el = $('#countdown');
+  el.textContent = 'GO!';
+  el.classList.remove('hidden');
+  if (anime) {
+    anime.remove(el);
+    anime({ targets: el, scale: [3, 1], opacity: [1, 0], duration: 680, easing: 'easeOutQuint' });
+  }
+  setTimeout(() => { el.classList.add('hidden'); el.textContent = ''; }, 700);
+  vibrate([15, 25, 15]);
+  // the move line already did the job of hint #1, so pick up from hint #2
+  setTimeout(() => showHints(1), 900);
+}
+
+function showHints(from = 0) {
   if (settings.seenTutorial) return;
   const el = $('#hints');
   const lines = [...el.querySelectorAll('.hint')];
   lines.forEach((l) => l.classList.add('hidden'));
   el.classList.remove('hidden');
-  let i = 0;
+  let i = Math.max(0, Math.min(from, lines.length));
   const next = () => {
     if (i > 0) lines[i - 1].classList.add('hidden');
     if (i >= lines.length) {
@@ -303,6 +380,7 @@ function showHints() {
 function startRun(fast = false) {
   unlockAudio();
   bumpStreak();
+  dismissMovePrompt();
   hide('#menu'); hide('#over'); hide('#pause');
   $('#hints').classList.add('hidden');
   $('#hud').classList.remove('dim');
@@ -426,19 +504,19 @@ $('#btn-play').addEventListener('click', () => { SFX.ui(); vibrate(HAPTIC.ui); s
 $('#btn-retry').addEventListener('click', () => { SFX.ui(); vibrate(HAPTIC.ui); startRun(true); });
 $('#btn-menu').addEventListener('click', () => {
   SFX.ui(); vibrate(HAPTIC.ui);
-  hide('#over'); show('#menu');
+  hide('#over');
   game.toMenu();
   $('#hud').classList.add('dim');
-  popIn('#menu');
+  openMenu();
 });
 
 $('#btn-resume').addEventListener('click', () => { SFX.ui(); vibrate(HAPTIC.ui); hide('#pause'); game.resume(); });
 $('#btn-quit').addEventListener('click', () => {
   SFX.ui(); vibrate(HAPTIC.ui);
-  hide('#pause'); hide('#over'); show('#menu');
+  hide('#pause'); hide('#over');
   game.toMenu();
   $('#hud').classList.add('dim');
-  popIn('#menu');
+  openMenu();
 });
 
 function toggle(name) {
@@ -542,9 +620,10 @@ function installNudge() {
   btn.classList.add('pulse');
   toast(IS_IOS ? 'ADD TO HOME SCREEN FOR FULL-SCREEN PLAY' : 'INSTALL NEON DODGE — PLAYS OFFLINE');
 }
+// held until well after the hook intro has handed over — never talk over it
 setTimeout(() => {
   if (document.body.classList.contains('ready')) installNudge();
-}, 5000);
+}, 12000);
 
 if ('serviceWorker' in navigator) {
   window.addEventListener('load', () => navigator.serviceWorker.register('sw.js').catch(() => {}));

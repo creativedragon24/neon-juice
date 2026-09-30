@@ -1,6 +1,6 @@
 /* Neon Dodge service worker — precache everything, serve cache-first.
    Bump CACHE when you ship new assets. */
-const CACHE = 'neon-dodge-v9'; // v9: Director agent, new enemies, play-again + retention
+const CACHE = 'neon-dodge-v10'; // v10: auto-start hook intro, move prompt, mouse-move audio unlock
 
 const ASSETS = [
   './',
