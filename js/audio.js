@@ -55,10 +55,21 @@ export function unlockAudio() {
   const c = ac();
   if (c && c.state !== 'running') c.resume().catch(() => {});
 }
+/* Autoplay unlock. The game boots straight into its own intro, so we cannot
+   wait for a PLAY click — we listen for *any* scrap of interaction, mouse
+   movement included, and detach the listeners the moment the context is
+   actually running so a hover never costs us a frame. */
 if (typeof window !== 'undefined') {
-  ['pointerdown', 'touchstart', 'keydown'].forEach((e) =>
-    window.addEventListener(e, unlockAudio, { passive: true })
-  );
+  const UNLOCK_EVENTS = ['pointerdown', 'pointermove', 'mousemove', 'mousedown',
+    'touchstart', 'touchmove', 'keydown', 'wheel', 'click'];
+  const tryUnlock = () => {
+    unlockAudio();
+    const c = ac();
+    if (c && c.state === 'running') {
+      UNLOCK_EVENTS.forEach((e) => window.removeEventListener(e, tryUnlock));
+    }
+  };
+  UNLOCK_EVENTS.forEach((e) => window.addEventListener(e, tryUnlock, { passive: true }));
   // save the battery on hidden tabs: suspend the context with the page
   if (typeof document !== 'undefined') {
     document.addEventListener('visibilitychange', () => {
@@ -176,6 +187,21 @@ export const SFX = {
     setTimeout(() => play([0.7, 0.2, 120, 0, 0.3, 1.2, 2, 1, -0.5, 0, 0, 0, 0, 2]), 300);
   },
   countdown(n) { play([0.4, 0.01, n === 0 ? 880 : 440, 0, 0.04, 0.16, 1, 1.2]); },
+  /* The hook: a rising warp whoosh, a rolled-in power chord and a boom. */
+  intro() {
+    play([0.7, 0.05, 80, 0.02, 0.5, 0.65, 2, 1.1, 9, 0, 0, 0, 0, 0.4, 0.3]);
+    [0, 7, 12, 19, 24].forEach((n, i) =>
+      setTimeout(() => play([0.4, 0.01, semi(220, n), 0, 0.07, 0.3, 1, 1.3], 1, (i - 2) * 0.24), i * 70)
+    );
+    setTimeout(() => play([0.85, 0.2, 140, 0, 0.1, 0.95, 2, 1.3, -0.5, 0, 0, 0, 0, 2.0, 0.4, 3]), 330);
+    duckMusic(0.5, 1.2);
+  },
+  /* The handoff: two bright stabs that hand the wheel back to the player. */
+  go() {
+    play([0.5, 0, 260, 0.01, 0.2, 0.32, 1, 1, 7]);
+    play([0.55, 0.01, 880, 0, 0.05, 0.24, 1, 1.2, 0, 0, 0.5, 0.05]);
+    setTimeout(() => play([0.42, 0.01, 1320, 0, 0.04, 0.22, 1, 1.2], 1, 0.2), 95);
+  },
   power(kind) {
     const base = kind === 'shield' ? 520 : kind === 'magnet' ? 430 : 660;
     [0, 7, 12, 19].forEach((n, i) =>

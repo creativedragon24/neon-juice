@@ -14,7 +14,8 @@ on:
   push:
     branches:
       - main
-      - arena/01a09fb8-neon-juice
+      # the active Arena session branch, so preview work redeploys too
+      - arena/01a0f079-neon-juice
   workflow_dispatch:
 
 # Required by the Pages actions.

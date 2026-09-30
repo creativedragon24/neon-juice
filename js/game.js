@@ -40,6 +40,12 @@ const MAX_STEPS = 5;        // never simulate more than this per frame (no spira
 const MAX_FRAME = 0.25;
 const SLOW_WARP = 0.55;
 
+/* The HOOK: length (in simulated run seconds) of the scripted opening that
+   plays itself the instant the page loads. Everything in beginIntro() is
+   timed against it. The entrance slow-mo and the graze hitstops stretch it
+   slightly on the clock, which lands the handoff at ~6.5s of wall time. */
+export const INTRO_DUR = 6.1;
+
 export class Game {
   constructor(canvas, hooks = {}) {
     this.canvas = canvas;
@@ -107,6 +113,8 @@ export class Game {
     this.hazards = [];
     this.pickups = [];
     this.pending = [];
+    this.markers = [];      // telegraph columns drawn before a scripted spawn
+    this.intro = null;      // active hook-intro script, if any
     this.spawnTimer = 1.25;
     this.gemTimer = 1.6;
     this.powerTimer = 12;
@@ -137,7 +145,8 @@ export class Game {
   }
 
   /* ------------------------------------------------------- lifecycle */
-  startRun() {
+  /** @param {{intro?: boolean}} opts — `intro` plays the scripted hook first. */
+  startRun(opts = {}) {
     this.resetRun();
     this.mode = settings.mode === 'daily' ? 'daily' : 'endless';
     this.seed = this.mode === 'daily' ? dailySeed() : (Math.random() * 4294967296) >>> 0;
@@ -151,12 +160,227 @@ export class Game {
     Music.setIntensity(1);
     this._mtier = 1;
     Music.start();
-    SFX.start();
-    vibrate(HAPTIC.start);
-    this.fx.flash('#ffffff', 0.35);
-    this.fx.shake(0.35);
+    if (opts.intro) {
+      this.beginIntro();
+    } else {
+      SFX.start();
+      vibrate(HAPTIC.start);
+      this.fx.flash('#ffffff', 0.35);
+      this.fx.shake(0.35);
+    }
     this.emitHud(true);
   }
+
+  /* ==================================================================
+     THE HOOK — a ~6.5 second opening that plays itself the moment the
+     page finishes loading. No menu, no 3-2-1: the player lands inside a
+     firework of easy wins and is already steering by the time it ends.
+
+     Beats, in wall-clock seconds (the run clock runs a touch behind
+     because of the entrance slow-mo and the graze hitstops):
+
+       0.0s  big neon entrance — the ship warps in through a shockwave
+       1.0s  free MAGNET lands on the ship
+       1.6s  instant rain of easy gems, hoovered in by the magnet
+       2.2s  free SLOW-MO lands — the world drops to half speed
+       2.7s  FEVER, off the back of the gem chain
+       3.9s  first of four slow, telegraphed hazards drifts in beside the
+             ship — close enough to graze, never close enough to hit
+       6.0s  a last gem flurry cashes the combo
+       6.5s  "GO!" — the script lets go and normal play takes over
+  ================================================================== */
+  beginIntro() {
+    const p = this.player;
+    const W = this.W, H = this.H;
+    const homeX = W / 2, homeY = H * 0.78;
+    const NEON = ['#38f5ff', '#ff2e88', '#ffd23f', '#4dff9e', '#ffffff'];
+
+    this.intro = { t: 0, dur: INTRO_DUR, done: false };
+
+    // The script owns the screen: park the procedural spawners past the end.
+    this.spawnTimer = INTRO_DUR + 2;
+    this.gemTimer = INTRO_DUR + 2;
+    this.powerTimer = INTRO_DUR + 9;
+    this.beamTimer = INTRO_DUR + 15;
+
+    // ship warps in from below and springs into the home spot
+    p.y = H + 54; p.py = p.y; p.sx = 0.4; p.sy = 2.3;
+    this.kTarget = { x: homeX, y: homeY };
+
+    /* ---- 0.0s · BIG NEON ENTRANCE ---------------------------------- */
+    this.hueTarget = (this.hueTarget + 150) % 360;
+    this.fx.slowmo(0.45, 3.4);
+    this.fx.flash('#ffffff', 1);
+    this.fx.shake(0.9);
+    this.fx.rgbSplit(1.5);
+    this.fx.punch(0.12);
+    this.pulse = 1.6;
+    SFX.intro();
+    vibrate([20, 40, 20, 40, 110]);
+
+    // three shockwaves blooming out of the warp point
+    this.fx.ring({ x: homeX, y: homeY, r0: 2, r1: 150, life: 0.75, color: '#ffffff', width: 3 });
+    this.schedule(0.09, () => this.fx.ring({ x: homeX, y: homeY, r0: 2, r1: 210, life: 0.85, color: '#38f5ff', width: 2 }));
+    this.schedule(0.20, () => {
+      this.fx.ring({ x: homeX, y: homeY, r0: 2, r1: 270, life: 0.95, color: '#ff2e88', width: 2 });
+      this.fx.rgbSplit(0.6);
+    });
+    // the burst itself + a column of light punching up the screen
+    this.fx.burst({ x: homeX, y: homeY, count: 90, colors: NEON, speed: [70, 430], size: [1, 4], life: [0.35, 1.1], gravity: 60, drag: 0.9 });
+    for (let i = 0; i < 26; i++) {
+      this.fx.emit(homeX + rnd(-10, 10), homeY + rnd(-6, 40), rnd(-40, 40), rnd(-460, -180),
+        rnd(0.4, 0.9), Math.random() < 0.4 ? 2 : 1, pick(NEON), 0, 0.93, true);
+    }
+    // two walls of sparks converging on the ship
+    for (const side of [0, W]) {
+      for (let i = 0; i < 14; i++) {
+        this.fx.emit(side, homeY + rnd(-70, 70), (homeX - side) * rnd(1.6, 3.2), rnd(-40, 40),
+          rnd(0.25, 0.5), 1, pick(['#38f5ff', '#ffffff']), 0, 0.9, true);
+      }
+    }
+    this.fx.popup({ x: homeX, y: H * 0.26, text: 'NEON DODGE', color: '#ffffff', scale: 3, life: 1.7, vy: -10 });
+    this.schedule(0.30, () => this.fx.popup({ x: homeX, y: H * 0.33, text: 'DODGE GRAZE SURVIVE', color: '#38f5ff', scale: 1, life: 1.5, vy: -8 }));
+
+    /* ---- 0.25s · FREE POWER-UP #1: MAGNET -------------------------- */
+    // Dropped close and fast so it lands before the gems do — by the time
+    // the rain arrives the ship is already hoovering.
+    this.schedule(0.25, () => {
+      const x = this.player.x;
+      this.introTelegraph(x, 0.4, POWER.magnet.color);
+      this.spawnPower('magnet', { x, y: Math.max(16, this.player.y - 240), vy: 340, escort: 0, escortK: 5 });
+    });
+
+    /* ---- 0.45s · INSTANT RAIN OF EASY GEMS ------------------------- */
+    // 16 gems on a lazy serpentine down the player's column: with the magnet
+    // live they curve in on their own, so the score is already climbing.
+    for (let i = 0; i < 16; i++) {
+      this.schedule(0.45 + i * 0.065, () => {
+        const x = clamp(this.player.x + Math.sin(i * 0.85) * 34 + (i % 2 ? 6 : -6), 14, this.W - 14);
+        this.pickups.push({ x, y: -14, vy: 290, ph: rnd(0, 6.28), kind: 'gem' });
+        this.fx.emit(x, -8, rnd(-20, 20), 120, 0.35, 1, '#ffd23f', 0, 0.92, true);
+      });
+    }
+
+    /* ---- 1.3s · FREE POWER-UP #2: SLOW-MO -------------------------- */
+    // Lands just before the graze lesson, so the hazards arrive at half
+    // speed and the first near-miss of the player's life is unmissable.
+    this.schedule(1.30, () => {
+      const x = this.player.x;
+      this.introTelegraph(x, 0.4, POWER.slow.color);
+      this.spawnPower('slow', { x, y: Math.max(16, this.player.y - 250), vy: 340, escort: 0, escortK: 5 });
+    });
+
+    /* ---- 2.3s · SLOW TELEGRAPHED GRAZE LESSONS --------------------- */
+    // Four hazards warp in a short way above the ship and drift down beside
+    // it — close enough to graze, never close enough to hit. Each one gets a
+    // half-second warning column first so it always reads as fair.
+    const LESSONS = [
+      { at: 2.05, off: -21, type: 'meteor' },
+      { at: 2.75, off: 22, type: 'drone' },
+      { at: 3.45, off: -22, type: 'meteor' },
+      { at: 4.15, off: 21, type: 'drone' },
+    ];
+    for (const L of LESSONS) {
+      this.schedule(L.at, () => {
+        const x = clamp(this.player.x + L.off, 16, this.W - 16);
+        this.introTelegraph(x, 0.45, '#ff2e88');
+        SFX.charge();
+      });
+      this.schedule(L.at + 0.45, () => this.introHazard(L.off, L.type));
+    }
+    this.schedule(2.05, () => this.fx.popup({ x: W / 2, y: H * 0.44, text: 'SKIM IT', color: '#ff2e88', scale: 2, life: 1.3 }));
+
+    /* ---- 5.0s · LAST GEM FLURRY ------------------------------------ */
+    // Close and quick, so the whole payout cashes in before the handoff.
+    for (let i = 0; i < 6; i++) {
+      this.schedule(5.00 + i * 0.06, () => {
+        const x = clamp(this.player.x + Math.sin(i * 1.3) * 26, 14, this.W - 14);
+        this.pickups.push({ x, y: Math.max(20, this.player.y - 155), vy: 300, ph: rnd(0, 6.28), kind: 'gem' });
+      });
+    }
+
+    /* ---- GO! -------------------------------------------------------- */
+    this.schedule(INTRO_DUR - 0.35, () => {
+      this.fx.flash('#ffffff', 0.4);
+      this.fx.rgbSplit(0.5);
+      this.pulse = 1.2;
+    });
+    this.schedule(INTRO_DUR, () => this.endIntro());
+  }
+
+  /** A warning column + ring: "something lands here in a moment". */
+  introTelegraph(x, life = 0.55, color = '#ff2e88') {
+    this.markers.push({ x, t: 0, life, max: life, color });
+    this.fx.ring({ x, y: 12, r0: 2, r1: 24, life: 0.45, color, width: 1 });
+  }
+
+  /** One slow escorting hazard, parked `off` pixels to the side of the ship. */
+  introHazard(off, type = 'meteor') {
+    const p = this.player;
+    const x = clamp(p.x + off, 16, this.W - 16);
+    const h = this.spawnHazard(x, 0, {
+      type,
+      y: Math.max(26, p.y - 132),
+      vy: 185,            // ~100px/s once the free slow-mo bites: a real crawl
+      vx: 0,
+    });
+    h.escort = off;       // drifts to hold its offset so the graze is a gimme
+    h.escortK = 1.9;
+    h.wobAmp = 0;
+    h.rotSpeed *= 0.35;
+    this.fx.ring({ x: h.x, y: h.y, r0: 22, r1: 4, life: 0.35, color: h.color, width: 2 });
+    this.fx.burst({ x: h.x, y: h.y, count: 14, colors: [h.color, '#ffffff'], speed: [40, 140], size: [1, 2], life: [0.2, 0.5] });
+    return h;
+  }
+
+  /** The handoff: the script lets go and the real game takes the wheel. */
+  endIntro() {
+    if (!this.intro || this.intro.done) return;
+    this.intro.done = true;
+    this.markers.length = 0;
+
+    /* The hook is a showreel, not a scoring opportunity: the run proper
+       starts here, at zero, so a first-of-session run is worth exactly the
+       same as a "play again". What the player *keeps* is the good stuff —
+       both power-ups, the combo they built and the multiplier riding on it. */
+    const carryCombo = this.combo;
+    this.pending.forEach((q) => { q.t -= this.time; });   // re-base the queue
+    this.time = 0;
+    this.score = 0;
+    this.gems = 0;
+    this.grazes = 0;
+    this.hitTimes.length = 0;
+    this.combo = carryCombo;
+    this.bestCombo = carryCombo;
+    this.comboTimer = Math.max(this.comboTimer, 2.6);
+    this.level = 1;
+    Music.setLevel(0);
+    this.director.onRunStart(this.mode);   // clean slate for the agent too
+
+    // hand the screen back to the procedural spawners
+    this.spawnTimer = 0.5;
+    this.gemTimer = 1.5;
+    this.powerTimer = srange(12, 18);
+    this.beamTimer = srange(13, 20);
+
+    SFX.go();
+    vibrate([18, 26, 18, 26, 70]);
+    this.fx.flash('#ffffff', 0.62);
+    this.fx.shake(0.6);
+    this.fx.rgbSplit(0.9);
+    this.fx.punch(0.07);
+    this.fx.speedUp(1.3, 5);
+    this.pulse = 1.5;
+    this.hueTarget = (this.hueTarget + 48) % 360;
+    this.fx.ring({ x: this.W / 2, y: this.H * 0.45, r0: 8, r1: 240, life: 0.7, color: '#ffffff', width: 3 });
+    this.fx.burst({ x: this.W / 2, y: this.H * 0.45, count: 54, colors: ['#38f5ff', '#ff2e88', '#ffd23f', '#ffffff'], speed: [90, 340], size: [1, 3], life: [0.3, 0.9], gravity: 40 });
+    this.fx.popup({ x: this.W / 2, y: this.H * 0.38, text: 'GO!', color: '#ffd23f', scale: 4, life: 1.1, vy: -18 });
+    this.emitHud(true);
+    if (this.hooks.onIntroEnd) this.hooks.onIntroEnd();
+  }
+
+  /** True while the scripted hook still owns the screen. */
+  get introActive() { return !!this.intro && !this.intro.done; }
 
   toMenu() {
     this.state = 'menu';
@@ -294,6 +518,9 @@ export class Game {
      endless runs; daily runs stay strictly seeded (pressure fixed at 1). */
   updatePressure(dt) {
     if (this.mode === 'daily') { this.pressure = 1; return; }
+    // the hook is hand-authored — the Director sits it out and starts
+    // observing the moment the player takes over at "GO!"
+    if (this.introActive) { this.pressure = 1; return; }
     this.director.update(dt, this);
   }
 
@@ -303,6 +530,12 @@ export class Game {
     this.starY = (this.starY + (26 + this.level * 5) * dt) % 128;
     this.skyX = (this.skyX + (7 + this.level * 2) * dt) % 256;
     this.pulse = Math.max(0, this.pulse - dt * 3.4);
+    if (this.intro && !this.intro.done) this.intro.t += dt;
+    for (let i = this.markers.length - 1; i >= 0; i--) {
+      const m = this.markers[i];
+      m.t += dt;
+      if (m.t >= m.max) this.markers.splice(i, 1);
+    }
 
     if (this.state === 'play') {
       this.updatePlayer(dt);
@@ -640,11 +873,18 @@ export class Game {
     }
   }
 
-  spawnPower(forceKind) {
+  spawnPower(forceKind, opts = {}) {
     const kind = forceKind || spick(Object.keys(POWER));
-    const x = srange(24, this.W - 24);
-    this.pickups.push({ x, y: -18, vy: 52 + this.level * 2, ph: rnd(0, 6.28), kind, r: 9 });
-    this.fx.ring({ x, y: -10, r0: 2, r1: 22, life: 0.55, color: POWER[kind].color, width: 1 });
+    const x = opts.x != null ? clamp(opts.x, 16, this.W - 16) : srange(24, this.W - 24);
+    const g = {
+      x, y: opts.y != null ? opts.y : -18,
+      vy: opts.vy != null ? opts.vy : 52 + this.level * 2,
+      ph: rnd(0, 6.28), kind, r: 9,
+    };
+    if (opts.escort != null) { g.escort = opts.escort; g.escortK = opts.escortK || 3; }
+    this.pickups.push(g);
+    this.fx.ring({ x, y: g.y + 8, r0: 2, r1: 22, life: 0.55, color: POWER[kind].color, width: 1 });
+    return g;
   }
 
   spawnGemArc(shower = false) {
@@ -678,6 +918,13 @@ export class Game {
       h.x += h.vx * warp * dt;
       h.rot += h.rotSpeed * dt;
       h.wob += dt;
+      // ESCORT: intro hazards hold a fixed offset beside the ship so the
+      // scripted graze lesson lands however the player is steering.
+      if (h.escort != null && this.state === 'play' && !frozenPlayer) {
+        const want = clamp(p.x + h.escort, 12, this.W - 12);
+        h.baseX += (want - h.baseX) * Math.min(1, dt * (h.escortK || 2));
+        if (h.type !== 'drone' && h.type !== 'weaver') h.x = h.baseX;
+      }
       // DRONE / WEAVER weave around an anchor x
       if (h.type === 'drone' || h.type === 'weaver') h.x = clamp(h.baseX + Math.sin(h.wob * h.wobFreq) * h.wobAmp, 8, this.W - 8);
       if (h.x < 8 || h.x > this.W - 8) { h.vx *= -1; h.baseX = clamp(h.baseX, 10, this.W - 10); }
@@ -716,6 +963,12 @@ export class Game {
     for (let i = this.pickups.length - 1; i >= 0; i--) {
       const g = this.pickups[i];
       g.ph += dt * 5;
+      // ESCORT: the intro's two free power-ups home in on the ship's column
+      // so "free" really means free — you cannot miss them.
+      if (g.escort != null && this.state === 'play' && !frozenPlayer) {
+        const want = clamp(p.x + g.escort, 12, this.W - 12);
+        g.x += (want - g.x) * Math.min(1, dt * (g.escortK || 3));
+      }
       // magnet drags loot toward the ship
       if (p.magnetT > 0 && g.kind === 'gem' && this.state === 'play') {
         const dx = p.x - g.x, dy = p.y - g.y, d = Math.hypot(dx, dy);
@@ -800,6 +1053,21 @@ export class Game {
     this.fx.popup({ x: p.x, y: p.y - 28, text: POWER[kind].label, color: col, scale: 3, life: 1.1 });
   }
 
+  /* Intro-only: bounce the hazard off instead of taking a life. */
+  introDeflect(h) {
+    const p = this.player;
+    this.score += 15;
+    SFX.shieldBreak(this.pan());
+    vibrate([25, 18, 25]);
+    this.fx.freeze(0.05);
+    this.fx.shake(0.38);
+    this.fx.flash('#38f5ff', 0.32);
+    this.fx.punch(0.035);
+    this.fx.burst({ x: p.x, y: p.y, count: 26, colors: ['#38f5ff', '#ffffff'], speed: [70, 250], size: [1, 3], life: [0.25, 0.7], gravity: 60 });
+    this.fx.ring({ x: p.x, y: p.y, r0: 6, r1: 78, life: 0.45, color: '#38f5ff', width: 2 });
+    this.fx.popup({ x: p.x, y: p.y - 26, text: 'SAFE', color: '#38f5ff', scale: 2, life: 0.8 });
+  }
+
   shieldBreak(h) {
     const p = this.player;
     p.invuln = 1.2;
@@ -820,6 +1088,9 @@ export class Game {
 
   takeHit(h) {
     const p = this.player;
+    // Nobody dies during the hook. A clumsy first contact still pays out —
+    // it just reads as the ship shrugging the hazard off.
+    if (this.introActive) { this.introDeflect(h); return; }
     if (p.shield) { p.shield = false; this.shieldBreak(h); return; }
     this.hitTimes.push(this.time);
     this.lives--;
@@ -1022,6 +1293,8 @@ export class Game {
       s.restore();
     }
 
+    this.drawMarkers(s, W, H);
+
     // ---- hazards
     for (const h of this.hazards) {
       const cfg = ENEMY[h.type] || ENEMY.meteor;
@@ -1077,6 +1350,36 @@ export class Game {
     }
 
     this.composite();
+  }
+
+  /* Telegraph columns: a fat soft glow, a hot centre line and a diamond
+     sliding down to the spot, so a scripted spawn is announced before it
+     ever exists. Pure fillRect so it stays crisp at any upscale. */
+  drawMarkers(s, W, H) {
+    if (!this.markers.length) return;
+    s.save();
+    s.globalCompositeOperation = 'lighter';
+    for (const m of this.markers) {
+      const k = Math.min(1, m.t / m.max);
+      const fade = 1 - k * k;
+      const blink = 0.55 + 0.45 * Math.sin(m.t * 30);
+      const x = Math.round(m.x);
+      s.fillStyle = m.color;
+      s.globalAlpha = 0.10 * fade;
+      s.fillRect(x - 8, 0, 16, H);
+      s.globalAlpha = 0.55 * fade * blink;
+      s.fillRect(x - 1, 0, 2, H);
+      // a 5x5 diamond riding down to the spawn point
+      const y = Math.round(6 + (H * 0.52) * k);
+      s.globalAlpha = 0.9 * fade;
+      for (let r = 0; r < 3; r++) {
+        const w = (3 - r) * 2 - 1;
+        s.fillRect(x - ((w / 2) | 0), y + r, w, 1);
+        if (r) s.fillRect(x - ((w / 2) | 0), y - r, w, 1);
+      }
+    }
+    s.restore();
+    s.globalAlpha = 1;
   }
 
   drawShield(ctx, p) {

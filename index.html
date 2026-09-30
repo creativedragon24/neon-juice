@@ -54,8 +54,13 @@
 
   <div id="countdown" class="hidden"></div>
 
-  <!-- ----------------------------------------------------------- MENU -->
-  <div id="menu" class="screen">
+  <!-- Device-aware "how do I move?" line, shown over the hook intro -->
+  <div id="move-prompt" class="hidden"></div>
+
+  <!-- ----------------------------------------------------------- MENU
+       The game auto-starts into the hook intro, so the menu boots hidden.
+       It is still reachable from GAME OVER -> MENU and PAUSE -> MENU. -->
+  <div id="menu" class="screen hidden">
     <h1 class="title"><span class="l1">NEON</span><span class="l2">DODGE</span></h1>
     <p class="tag stagger">drag to move &middot; graze for combo</p>
     <button id="btn-play" class="btn big stagger">PLAY</button>
